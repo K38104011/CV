@@ -78,14 +78,42 @@ strong{font-weight:700}
 .job ul{margin:0;padding-left:16pt;list-style:disc}
 .job li::marker{color:var(--bullet)}
 
+/* ---------- export button ---------- */
+.export-btn{
+  position:fixed;
+  top:16px;
+  right:16px;
+  z-index:1000;
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:14px;
+  font-weight:700;
+  color:#fff;
+  background:#111;
+  border:0;
+  border-radius:6px;
+  padding:10px 16px;
+  cursor:pointer;
+  box-shadow:0 2px 6px rgba(0,0,0,.2);
+}
+.export-btn:hover{background:#333}
+.export-btn:disabled{opacity:.6;cursor:wait}
+
+/* ---------- page-break control ---------- */
+/* real spacer inserted by paginate() to reserve top/bottom margin */
+.page-spacer{display:block;width:100%;margin:0;padding:0;border:0}
+
 @media print{
   html,body{background:#fff}
   .sheet{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}
+  .export-btn{display:none !important}
   @page{size:A4;margin:16mm 14mm}
+  .job,.skill,.section-title{break-inside:avoid;page-break-inside:avoid}
 }
 </style>
 </head>
 <body>
+<button id="exportPdf" class="export-btn" type="button">Export to PDF</button>
+
 <main class="sheet">
 
   <header class="header">
@@ -298,5 +326,94 @@ strong{font-weight:700}
   </section>
 
 </main>
+
+<script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
+<script>
+(() => {
+  const btn = document.getElementById('exportPdf');
+  if (!btn) return;
+
+  const cleanup = (root) => {
+    for (const n of root.querySelectorAll('.page-spacer')) n.remove();
+  };
+
+  // --- A4 geometry -----------------------------------------------------
+  // A4 = 210 x 297 mm. CSS px per mm = 96/25.4 = 3.779528.
+  // Full page height in px = 297 * 3.779528 = 1122.5 px.
+  // html2pdf slices the rendered canvas every `full page height` px, so
+  // with margin:0 the content keeps 1:1 scale (no shrink). To keep real
+  // top/bottom whitespace we insert SPACERS that push a block down to
+  // start of the next page + top margin, so the previous page ends before
+  // its bottom-margin line.
+  const A4 = { width: 210, height: 297 };            // mm
+  const MARGIN = { top: 16, right: 14, bottom: 16, left: 14 }; // mm
+  const PX_PER_MM = 96 / 25.4;                       // 3.779528
+  const PAGE_H = A4.height * PX_PER_MM;              // 1122.5 px
+  const TOP_GAP = MARGIN.top * PX_PER_MM;            // 60.5 px
+  const BOTTOM_GAP = MARGIN.bottom * PX_PER_MM;      // 60.5 px
+  const USABLE_H = PAGE_H - TOP_GAP - BOTTOM_GAP;    // 1001.6 px (265mm)
+
+  // Walk breakable blocks in DOM order, live-measuring each so previously
+  // inserted spacers are accounted for. When a block would cross the
+  // bottom-margin line and fits on one page, insert a spacer so it starts
+  // at the next page's top-margin line.
+  const paginate = (root) => {
+    cleanup(root);
+    const base = root.getBoundingClientRect().top;
+    const blocks = root.querySelectorAll('.job, .skill, .header');
+    for (const el of blocks) {
+      const r = el.getBoundingClientRect();
+      const top = r.top - base;
+      const bottom = r.bottom - base;
+      const h = r.height;
+      if (h > USABLE_H) continue;                  // can't fit: let it split
+      const k = Math.floor(top / PAGE_H);          // current page index
+      const safeBottom = (k + 1) * PAGE_H - BOTTOM_GAP;
+      if (bottom > safeBottom) {
+        const padH = Math.max(0, Math.ceil((k + 1) * PAGE_H + TOP_GAP - top));
+        const pad = document.createElement('div');
+        pad.className = 'page-spacer';
+        pad.style.height = `${padH}px`;
+        el.before(pad);
+      }
+    }
+  };
+
+  btn.addEventListener('click', async () => {
+    if (typeof html2pdf === 'undefined') {
+      alert('PDF library failed to load. Check your internet connection.');
+      return;
+    }
+
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+
+    const element = document.querySelector('.sheet');
+    paginate(element);
+
+    try {
+      await html2pdf()
+        .set({
+          margin: 0,
+          filename: 'PHAM-DANG-HOANG-GIANG_CV.pdf',
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+          pagebreak: { mode: ['css', 'legacy'] }
+        })
+        .from(element)
+        .save();
+    } catch (err) {
+      console.error(err);
+      alert('PDF export failed.');
+    } finally {
+      cleanup(element);
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+})();
+</script>
 </body>
 </html>
