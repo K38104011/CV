@@ -440,63 +440,90 @@ strong{font-weight:700}
     }
   };
 
+  const isPdfLibraryLoaded = () => typeof html2pdf !== 'undefined';
+
+  const setButtonBusy = (busy) => {
+    if (busy) {
+      btn.dataset.label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Generating...';
+    } else {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.label;
+    }
+  };
+
+  // html2canvas offsets the captured content by the page scroll, which yields
+  // blank leading pages when the user has scrolled. Pin to the top for both
+  // measurement and rendering, then restore the view afterwards.
+  const pinViewToTop = () => {
+    const prevScroll = { x: window.scrollX, y: window.scrollY };
+    window.scrollTo(0, 0);
+    return prevScroll;
+  };
+
+  const restoreView = (prevScroll) =>
+    window.scrollTo(prevScroll.x, prevScroll.y);
+
+  // Let layout settle for two frames so pinned-scroll geometry is captured.
+  const waitForRepaint = () =>
+    new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))
+    );
+
+  const waitForImage = (img) =>
+    img.complete
+      ? Promise.resolve()
+      : new Promise((resolve) => {
+          img.addEventListener('load', resolve, { once: true });
+          img.addEventListener('error', resolve, { once: true });
+        });
+
+  // Wait for web fonts and the photo so measurement matches the render.
+  const waitForAssets = async (element) => {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    await Promise.all(Array.from(element.querySelectorAll('img')).map(waitForImage));
+  };
+
+  const renderPdf = (element) =>
+    html2pdf()
+      .set({
+        margin: 0,
+        filename: 'PHAM-DANG-HOANG-GIANG_CV.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        // Page breaks are driven entirely by the spacers inserted above.
+        // Disable html2pdf's own break injection so it cannot double-handle
+        // (its canvas slicer still splits pages).
+        pagebreak: { mode: [] }
+      })
+      .from(element)
+      .save();
+
   btn.addEventListener('click', async () => {
-    if (typeof html2pdf === 'undefined') {
+    if (!isPdfLibraryLoaded()) {
       alert('PDF library failed to load. Check your internet connection.');
       return;
     }
 
-    const original = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Generating...';
-
     const element = document.querySelector('.sheet');
-    const prevScroll = { x: window.scrollX, y: window.scrollY };
+    const prevScroll = pinViewToTop();
 
-    // html2canvas offsets the captured content by the page scroll, which yields
-    // blank leading pages when the user has scrolled. Pin to the top for both
-    // measurement and rendering, then restore the view afterwards.
-    window.scrollTo(0, 0);
-    await new Promise((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(resolve))
-    );
-
-    paginate(element);
+    setButtonBusy(true);
 
     try {
-      // Wait for web fonts and the photo so measurement matches the render.
-      if (document.fonts && document.fonts.ready) await document.fonts.ready;
-      await Promise.all(
-        Array.from(element.querySelectorAll('img')).map((img) =>
-          img.complete ? Promise.resolve() : new Promise((res) => {
-            img.addEventListener('load', res, { once: true });
-            img.addEventListener('error', res, { once: true });
-          })
-        )
-      );
-
-      await html2pdf()
-        .set({
-          margin: 0,
-          filename: 'PHAM-DANG-HOANG-GIANG_CV.pdf',
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-          // Page breaks are driven entirely by the spacers inserted above.
-          // Disable html2pdf's own break injection so it cannot double-handle
-          // (its canvas slicer still splits pages).
-          pagebreak: { mode: [] }
-        })
-        .from(element)
-        .save();
+      await waitForRepaint();
+      paginate(element);
+      await waitForAssets(element);
+      await renderPdf(element);
     } catch (err) {
       console.error(err);
       alert('PDF export failed.');
     } finally {
       cleanup(element);
-      window.scrollTo(prevScroll.x, prevScroll.y);
-      btn.disabled = false;
-      btn.textContent = original;
+      restoreView(prevScroll);
+      setButtonBusy(false);
     }
   });
 })();
