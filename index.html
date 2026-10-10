@@ -100,14 +100,16 @@ strong{font-weight:700}
 
 /* ---------- page-break control ---------- */
 /* real spacer inserted by paginate() to reserve top/bottom margin */
-.page-spacer{display:block;width:100%;margin:0;padding:0;border:0}
+.page-spacer{display:block;width:100%;margin:0;padding:0;border:0;list-style:none}
 
 @media print{
   html,body{background:#fff}
   .sheet{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}
   .export-btn{display:none !important}
   @page{size:A4;margin:16mm 14mm}
-  .job,.skill,.section-title{break-inside:avoid;page-break-inside:avoid}
+  .skill,.section-title{break-inside:avoid;page-break-inside:avoid}
+  /* jobs may split across pages; keep individual paragraphs/items intact */
+  .job p,.job li,.job .company{break-inside:avoid;page-break-inside:avoid}
 }
 </style>
 </head>
@@ -356,8 +358,9 @@ strong{font-weight:700}
   const BREAKABLE_SELECTOR = '.job, .skill, .header';
 
   // Build a real spacer element that reserves `heightPx` of vertical space.
-  const createPageSpacer = (heightPx) => {
-    const spacer = document.createElement('div');
+  // Inside a <ul> it must be an <li> to stay valid; elsewhere a <div>.
+  const createPageSpacer = (heightPx, parent) => {
+    const spacer = document.createElement(parent && parent.tagName === 'UL' ? 'li' : 'div');
     spacer.className = 'page-spacer';
     spacer.style.height = `${heightPx}px`;
     return spacer;
@@ -382,15 +385,48 @@ strong{font-weight:700}
   const spacerHeightToNextPage = (pageIndex, top) =>
     Math.max(0, Math.ceil((pageIndex + 1) * PAGE_H + TOP_GAP - top));
 
-  // If the block fits on one page but crosses the bottom-margin line, insert
-  // a spacer before it so it starts at the next page's top-margin line.
-  const paginateBlock = (element, rootTop) => {
-    const { top, bottom, height } = measureBlock(element, rootTop);
-    if (height > USABLE_H) return;                 // can't fit: let it split
-    const pageIndex = pageIndexOfTop(top);
-    if (bottom > pageBottomLimit(pageIndex)) {
-      element.before(createPageSpacer(spacerHeightToNextPage(pageIndex, top)));
+  // Units inside a block that may each be pushed to the next page on their
+  // own. Jobs expose their body paragraphs / list items so only the part that
+  // overflows moves, instead of the whole block. Block-level elements (header,
+  // skill rows) have no splittable body and stay atomic.
+  const splitUnitsOf = (block) => {
+    const body = block.querySelector(':scope > .body');
+    if (!body) return [block];
+    const units = [];
+    for (const child of body.children) {
+      if (child.tagName === 'UL' && child.children.length > 1) {
+        units.push(...child.children);       // allow breaking between items
+      } else {
+        units.push(child);
+      }
     }
+    return units.length ? units : [block];
+  };
+
+  // Push `element` down so it starts at the next page's top-margin line.
+  const pushToNextPage = (element, top) => {
+    const pageIndex = pageIndexOfTop(top);
+    element.before(
+      createPageSpacer(spacerHeightToNextPage(pageIndex, top), element.parentElement)
+    );
+  };
+
+  // Walk a block's units in order, live-measuring each so previously inserted
+  // spacers are accounted for. The first unit keeps the block's opening
+  // together (push the whole block); later units are split off individually.
+  const paginateBlock = (block, rootTop) => {
+    const units = splitUnitsOf(block);
+    units.forEach((unit, index) => {
+      const { top, bottom, height } = measureBlock(unit, rootTop);
+      if (height > USABLE_H) return;                 // can't fit: let it split
+      if (bottom <= pageBottomLimit(pageIndexOfTop(top))) return;
+      if (index === 0) {
+        const blockTop = measureBlock(block, rootTop).top;
+        pushToNextPage(block, blockTop);
+      } else {
+        pushToNextPage(unit, top);
+      }
+    });
   };
 
   // Walk breakable blocks in DOM order, live-measuring each so previously
@@ -415,9 +451,30 @@ strong{font-weight:700}
     btn.textContent = 'Generating...';
 
     const element = document.querySelector('.sheet');
+    const prevScroll = { x: window.scrollX, y: window.scrollY };
+
+    // html2canvas offsets the captured content by the page scroll, which yields
+    // blank leading pages when the user has scrolled. Pin to the top for both
+    // measurement and rendering, then restore the view afterwards.
+    window.scrollTo(0, 0);
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))
+    );
+
     paginate(element);
 
     try {
+      // Wait for web fonts and the photo so measurement matches the render.
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      await Promise.all(
+        Array.from(element.querySelectorAll('img')).map((img) =>
+          img.complete ? Promise.resolve() : new Promise((res) => {
+            img.addEventListener('load', res, { once: true });
+            img.addEventListener('error', res, { once: true });
+          })
+        )
+      );
+
       await html2pdf()
         .set({
           margin: 0,
@@ -425,7 +482,10 @@ strong{font-weight:700}
           image: { type: 'jpeg', quality: 0.98 },
           html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
           jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-          pagebreak: { mode: ['css', 'legacy'] }
+          // Page breaks are driven entirely by the spacers inserted above.
+          // Disable html2pdf's own break injection so it cannot double-handle
+          // (its canvas slicer still splits pages).
+          pagebreak: { mode: [] }
         })
         .from(element)
         .save();
@@ -434,6 +494,7 @@ strong{font-weight:700}
       alert('PDF export failed.');
     } finally {
       cleanup(element);
+      window.scrollTo(prevScroll.x, prevScroll.y);
       btn.disabled = false;
       btn.textContent = original;
     }
