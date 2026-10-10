@@ -334,7 +334,7 @@ strong{font-weight:700}
   if (!btn) return;
 
   const cleanup = (root) => {
-    for (const n of root.querySelectorAll('.page-spacer')) n.remove();
+    for (const spacerNode of root.querySelectorAll('.page-spacer')) spacerNode.remove();
   };
 
   // --- A4 geometry -----------------------------------------------------
@@ -353,29 +353,54 @@ strong{font-weight:700}
   const BOTTOM_GAP = MARGIN.bottom * PX_PER_MM;      // 60.5 px
   const USABLE_H = PAGE_H - TOP_GAP - BOTTOM_GAP;    // 1001.6 px (265mm)
 
+  const BREAKABLE_SELECTOR = '.job, .skill, .header';
+
+  // Build a real spacer element that reserves `heightPx` of vertical space.
+  const createPageSpacer = (heightPx) => {
+    const spacer = document.createElement('div');
+    spacer.className = 'page-spacer';
+    spacer.style.height = `${heightPx}px`;
+    return spacer;
+  };
+
+  // Measure a block relative to the top of the sheet (offsets in px).
+  const measureBlock = (element, rootTop) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      top: rect.top - rootTop,
+      bottom: rect.bottom - rootTop,
+      height: rect.height
+    };
+  };
+
+  const pageIndexOfTop = (top) => Math.floor(top / PAGE_H);
+
+  // Lowest y a block may reach on `pageIndex` without crossing the bottom margin.
+  const pageBottomLimit = (pageIndex) => (pageIndex + 1) * PAGE_H - BOTTOM_GAP;
+
+  // Spacer height that pushes a block down to the next page's top-margin line.
+  const spacerHeightToNextPage = (pageIndex, top) =>
+    Math.max(0, Math.ceil((pageIndex + 1) * PAGE_H + TOP_GAP - top));
+
+  // If the block fits on one page but crosses the bottom-margin line, insert
+  // a spacer before it so it starts at the next page's top-margin line.
+  const paginateBlock = (element, rootTop) => {
+    const { top, bottom, height } = measureBlock(element, rootTop);
+    if (height > USABLE_H) return;                 // can't fit: let it split
+    const pageIndex = pageIndexOfTop(top);
+    if (bottom > pageBottomLimit(pageIndex)) {
+      element.before(createPageSpacer(spacerHeightToNextPage(pageIndex, top)));
+    }
+  };
+
   // Walk breakable blocks in DOM order, live-measuring each so previously
-  // inserted spacers are accounted for. When a block would cross the
-  // bottom-margin line and fits on one page, insert a spacer so it starts
-  // at the next page's top-margin line.
+  // inserted spacers are accounted for.
   const paginate = (root) => {
     cleanup(root);
-    const base = root.getBoundingClientRect().top;
-    const blocks = root.querySelectorAll('.job, .skill, .header');
-    for (const el of blocks) {
-      const r = el.getBoundingClientRect();
-      const top = r.top - base;
-      const bottom = r.bottom - base;
-      const h = r.height;
-      if (h > USABLE_H) continue;                  // can't fit: let it split
-      const k = Math.floor(top / PAGE_H);          // current page index
-      const safeBottom = (k + 1) * PAGE_H - BOTTOM_GAP;
-      if (bottom > safeBottom) {
-        const padH = Math.max(0, Math.ceil((k + 1) * PAGE_H + TOP_GAP - top));
-        const pad = document.createElement('div');
-        pad.className = 'page-spacer';
-        pad.style.height = `${padH}px`;
-        el.before(pad);
-      }
+    const rootTop = root.getBoundingClientRect().top;
+    const blocks = root.querySelectorAll(BREAKABLE_SELECTOR);
+    for (const block of blocks) {
+      paginateBlock(block, rootTop);
     }
   };
 
